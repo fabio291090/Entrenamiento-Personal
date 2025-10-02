@@ -155,6 +155,10 @@
                 } catch (error) {
                     console.error("Error deleting template:", error);
                     window.App.showMessage(`Error al eliminar plantilla: ${error.message}`, 'error');
+                    // Forzar la actualización de la vista de planificación
+                    if (window.App.currentView === 'planning') {
+                        window.App.renderPlanningView();
+                    }
                 }
             },
 
@@ -667,7 +671,7 @@
                     });
 
                     // 2. Filtrar ejercicios que no tienen nombre
-                    // Usamos map para asegurar que, si hay ejercicios con sets vacíos, estos se mantengan para la plantilla
+                    // Usamos filter para asegurar que, si hay ejercicios con sets vacíos, estos se mantengan para la plantilla
                     editingTemplate.exercises = editingTemplate.exercises.filter(ex => ex.name.trim() !== '');
 
                     // 3. Validación de contenido (CORRECCIÓN CLAVE)
@@ -760,7 +764,7 @@
                 // Actualizar pestañas (usando la clase 'nav-button' y 'active')
                 document.querySelectorAll('.nav-button').forEach(button => {
                     // Quitamos las clases de color base, ya están en el CSS Style block
-                    button.classList.remove('active', 'bg-indigo-700', 'bg-indigo-600');
+                    button.classList.remove('active');
                     if (button.id === `tab-${this.currentView}`) {
                         button.classList.add('active'); // Aplica el estilo activo de CSS
                     }
@@ -994,15 +998,39 @@
             },
         });
 
-        // --- INICIALIZACIÓN DE FIREBASE ---
+        // --- INICIALIZACIÓN DE FIREBASE Y LISTENERS DE DOM ---
+
+        // Función para configurar los event listeners de la navegación
+        const setupNavListeners = () => {
+            try {
+                // Seleccionamos los botones de navegación
+                const logBtn = document.getElementById('tab-log');
+                const historyBtn = document.getElementById('tab-history');
+                const planningBtn = document.getElementById('tab-planning');
+
+                // Añadimos los listeners de clic, asegurando que App.setView esté disponible
+                if (logBtn) logBtn.addEventListener('click', () => window.App.setView('log'));
+                if (historyBtn) historyBtn.addEventListener('click', () => window.App.setView('history'));
+                if (planningBtn) planningBtn.addEventListener('click', () => window.App.setView('planning'));
+            } catch (e) {
+                console.error("Error al configurar listeners de navegación:", e);
+            }
+        };
+
+        // Inicialización de Firebase
         try {
             app = initializeApp(firebaseConfig);
             db = getFirestore(app);
             window.App.initializeAuth();
         } catch (e) {
             console.error("Error al inicializar Firebase. Asegúrate de que __firebase_config esté definido.", e);
-            document.getElementById('loading-message').textContent = 'Error: No se pudo inicializar la base de datos.';
+            const loadingMsg = document.getElementById('loading-message');
+            if (loadingMsg) loadingMsg.textContent = 'Error: No se pudo inicializar la base de datos.';
         }
+
+        // Ejecutar los listeners de navegación cuando el DOM esté listo
+        // (Esto es más robusto que usar onclick directamente en HTML cuando se usa type="module" en el head)
+        document.addEventListener('DOMContentLoaded', setupNavListeners);
     </script>
 </head>
 <body class="p-4 sm:p-8">
@@ -1036,15 +1064,16 @@
             
             <!-- Barra de Navegación con Fondo Indigo-100 (Claro) -->
             <nav class="mt-8 flex space-x-2 bg-indigo-100 p-2 rounded-2xl shadow-lg">
-                <button id="tab-log" onclick="window.App.setView('log')" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl active">
+                <!-- SE ELIMINA EL ONCLICK. Ahora se maneja con un event listener en JS. -->
+                <button id="tab-log" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl active">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM6 9a2 2 0 100 4h8a2 2 0 100-4H6z" /></svg>
                     <span class="hidden sm:inline">Registro Diario</span>
                 </button>
-                <button id="tab-history" onclick="window.App.setView('history')" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl">
+                <button id="tab-history" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline mr-1" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" /></svg>
                     <span class="hidden sm:inline">Historial</span>
                 </button>
-                <button id="tab-planning" onclick="window.App.setView('planning')" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl">
+                <button id="tab-planning" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" /></svg>
                     <span class="hidden sm:inline">Planificación</span>
                 </button>
@@ -1077,3 +1106,4 @@
     </div>
 </body>
 </html>
+
