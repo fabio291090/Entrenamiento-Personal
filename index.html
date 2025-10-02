@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Entrenamiento Personal | Registro de Sobrecarga Progresiva</title>
+    <title>Entrenamiento Personal | Registro Cloud (Firestore)</title>
     <!-- Carga de Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -17,7 +17,6 @@
         }
         .container-card {
             min-height: 90vh;
-            /* Estilo de tarjeta principal mejorado */
             border: 1px solid #c7d2fe; /* Indigo-200 */
         }
         /* Estilo para el botón de borrar set */
@@ -45,10 +44,9 @@
             position: relative;
             z-index: 10;
             transition: all 0.3s ease;
-            /* Usamos sombra oscura para que se vea bien sobre el fondo claro */
             box-shadow: 0 4px #1e1b4b; /* Indigo-900 */ 
             transform: translateY(0);
-            color: white; /* Color base del texto de los botones de navegación */
+            color: white; 
             background-color: #4f46e5; /* Indigo-600 */
         }
         .nav-button:active {
@@ -60,52 +58,43 @@
             color: white;
             box-shadow: 0 6px #3730a3; 
         }
+
+        /* Estilo del loading spinner */
+        .spinner {
+            border-top-color: #4f46e5;
+            -webkit-animation: spinner 1.5s linear infinite;
+            animation: spinner 1.5s linear infinite;
+        }
+        @-webkit-keyframes spinner {
+            0% { -webkit-transform: rotate(0deg); }
+            100% { -webkit-transform: rotate(360deg); }
+        }
+        @keyframes spinner {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
-    <!-- ELIMINADOS: Todas las importaciones y la lógica de inicialización de Firebase -->
+    
+    <!-- Importaciones de Firebase (Configuración obligatoria para el entorno Canvas) -->
     <script type="module">
-        
-        // --- Variables de Utilidad para localStorage ---
-        const WORKOUTS_KEY = 'tracker_workouts';
-        const TEMPLATES_KEY = 'tracker_templates';
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection, query, limit, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        /**
-         * Carga datos desde localStorage.
-         * @param {string} key - La clave de localStorage.
-         * @returns {Array} - El array de datos o un array vacío si no existe.
-         */
-        const loadLocalData = (key) => {
-            try {
-                const data = localStorage.getItem(key);
-                return data ? JSON.parse(data) : [];
-            } catch (e) {
-                console.error(`Error loading data from localStorage for key: ${key}`, e);
-                return [];
-            }
-        };
-
-        /**
-         * Guarda datos en localStorage.
-         * @param {string} key - La clave de localStorage.
-         * @param {Array} data - El array de datos a guardar.
-         */
-        const saveLocalData = (key, data) => {
-            try {
-                localStorage.setItem(key, JSON.stringify(data));
-            } catch (e) {
-                console.error(`Error saving data to localStorage for key: ${key}`, e);
-                window.App.showMessage('Error al guardar datos localmente. El navegador podría estar lleno.', 'error');
-            }
-        };
-
-        // Se inicializa window.App inmediatamente y se cargan los datos locales
+        // Se inicializa window.App inmediatamente
         window.App = {
             currentView: 'log',
-            // isAuthReady y userId ya no son relevantes pero se mantienen como local_user
-            isAuthReady: true,
-            userId: 'local_user', 
-            // Cargar datos al inicio
-            workouts: loadLocalData(WORKOUTS_KEY), 
-            templates: loadLocalData(TEMPLATES_KEY), 
+            isAuthReady: false, // Controla si la autenticación está lista
+            userId: null,
+            db: null,
+            auth: null,
+            appId: 'default-app-id',
+            
+            // Datos que se sincronizan con Firestore
+            workouts: [], 
+            templates: [], 
+            
             currentWorkoutDate: new Date().toISOString().substring(0, 10),
             currentLog: { 
                 id: crypto.randomUUID(), 
@@ -115,64 +104,76 @@
             },
             previousPerformance: null,
 
-            // ELIMINADAS: Rutas de Firestore (getWorkoutCollectionPath, getTemplateCollectionPath)
+            // --- Funciones de Utilidad de Firebase Firestore (Cloud) ---
 
-            // --- Funciones de Persistencia (Ahora usando localStorage) ---
+            // Definición de las rutas de colección seguras (MANDATORIO)
+            getWorkoutCollectionPath: (uid) => 
+                `artifacts/${window.App.appId}/users/${uid}/workouts`,
+            getTemplateCollectionPath: (uid) => 
+                `artifacts/${window.App.appId}/users/${uid}/templates`,
 
-            // Guarda o actualiza un entrenamiento (USA EL ID DEL LOG PARA EL DOCUMENTO)
+            /**
+             * Guarda o actualiza un entrenamiento en Firestore.
+             */
             saveWorkout: async (workout) => {
-                // 1. Encontrar y reemplazar (si existe) o añadir
-                const index = window.App.workouts.findIndex(w => w.id === workout.id);
-                if (index > -1) {
-                    window.App.workouts[index] = workout; // Reemplazar
-                } else {
-                    window.App.workouts.push(workout); // Añadir
-                }
-
-                // 2. Guardar en localStorage
-                saveLocalData(WORKOUTS_KEY, window.App.workouts);
+                if (!window.App.userId) return { success: false };
                 
-                window.App.showMessage(`Entrenamiento para el ${workout.date} guardado exitosamente (Local).`, 'success');
-                return { success: true };
+                try {
+                    const docRef = doc(window.App.db, window.App.getWorkoutCollectionPath(window.App.userId), workout.id);
+                    await setDoc(docRef, workout);
+                    window.App.showMessage(`Entrenamiento para el ${workout.date} guardado exitosamente (Cloud).`, 'success');
+                    return { success: true };
+                } catch (e) {
+                    console.error("Error saving workout to Firestore: ", e);
+                    window.App.showMessage("Error al guardar el entrenamiento en la nube.", 'error');
+                    return { success: false };
+                }
             },
 
-            // Guarda o actualiza una plantilla
+            /**
+             * Guarda o actualiza una plantilla en Firestore.
+             */
             saveTemplate: async (template) => {
-                const index = window.App.templates.findIndex(t => t.id === template.id);
-                if (index > -1) {
-                    window.App.templates[index] = template;
-                } else {
-                    window.App.templates.push(template);
+                if (!window.App.userId) return { success: false };
+
+                try {
+                    const docRef = doc(window.App.db, window.App.getTemplateCollectionPath(window.App.userId), template.id);
+                    await setDoc(docRef, template);
+                    window.App.showMessage(`Plantilla '${template.name}' guardada (Cloud).`, 'success');
+                    return { success: true };
+                } catch (e) {
+                    console.error("Error saving template to Firestore: ", e);
+                    window.App.showMessage("Error al guardar la plantilla en la nube.", 'error');
+                    return { success: false };
                 }
-                
-                // Guardar en localStorage
-                saveLocalData(TEMPLATES_KEY, window.App.templates);
-
-                window.App.showMessage(`Plantilla '${template.name}' guardada (Local).`, 'success');
-                return { success: true };
             },
 
-            // Elimina una plantilla
+            /**
+             * Elimina una plantilla de Firestore.
+             */
             deleteTemplate: async (templateId) => {
-                window.App.templates = window.App.templates.filter(t => t.id !== templateId);
-                
-                // Guardar en localStorage
-                saveLocalData(TEMPLATES_KEY, window.App.templates);
+                if (!window.App.userId) return;
 
-                window.App.showMessage(`Plantilla eliminada exitosamente (Local).`, 'success');
-                // Forzar refresco de la vista de planificación
-                window.App.renderPlanningView(); 
+                try {
+                    const docRef = doc(window.App.db, window.App.getTemplateCollectionPath(window.App.userId), templateId);
+                    await deleteDoc(docRef);
+                    window.App.showMessage(`Plantilla eliminada exitosamente (Cloud).`, 'success');
+                } catch (e) {
+                    console.error("Error deleting template from Firestore: ", e);
+                    window.App.showMessage("Error al eliminar la plantilla de la nube.", 'error');
+                }
             },
 
-            // Cargar el rendimiento anterior de un ejercicio específico (solo busca en el array in-memory)
+            /**
+             * Carga el rendimiento anterior de un ejercicio específico buscando en los últimos 15 workouts.
+             */
             fetchPreviousPerformance: async (exerciseName) => {
-                if (!exerciseName) return null;
+                if (!exerciseName || !window.App.userId) return null;
 
-                // Buscamos directamente en el array de workouts cargado en memoria
+                // Buscamos directamente en el array de workouts cargado por onSnapshot (ya en memoria)
                 // Ordenamos por fecha descendente
                 const sortedWorkouts = [...window.App.workouts].sort((a, b) => b.date.localeCompare(a.date));
 
-                // Iteramos sobre los documentos más recientes (limitando a 15)
                 for (let i = 0; i < Math.min(sortedWorkouts.length, 15); i++) {
                     const workout = sortedWorkouts[i];
                     const targetExercise = workout.exercises.find(ex => ex.name.toLowerCase() === exerciseName.toLowerCase());
@@ -188,7 +189,118 @@
                 return null;
             },
 
-            // Función para mostrar mensajes temporales (MANTENIDA)
+
+            // --- LÓGICA DE FIREBASE Y AUTHENTICATION (MANDATORIA) ---
+
+            /**
+             * 1. Inicializa Firebase y autentica al usuario.
+             */
+            initializeAuth: async () => {
+                // Configuración de las variables globales proporcionadas por el entorno
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                
+                window.App.appId = appId;
+                
+                try {
+                    const app = initializeApp(firebaseConfig);
+                    window.App.auth = getAuth(app);
+                    window.App.db = getFirestore(app);
+                    
+                    // Solo para desarrollo, para ver logs en la consola
+                    setLogLevel('debug'); 
+
+                    // 2. Autenticación con el token personalizado (si existe) o anónima
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(window.App.auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(window.App.auth);
+                    }
+
+                    // 3. Establecer el observador del estado de autenticación
+                    onAuthStateChanged(window.App.auth, (user) => {
+                        if (user) {
+                            window.App.userId = user.uid;
+                            window.App.isAuthReady = true;
+                            // Una vez autenticado, inicializar los listeners de Firestore
+                            window.App.setupFirestoreListeners();
+                        } else {
+                            // Usuario no logueado (ej. si falla la anónima)
+                            console.error("Authentication failed. User is null.");
+                            window.App.showMessage("No se pudo establecer la conexión con el servidor. Datos no sincronizados.", 'error');
+                            window.App.isAuthReady = true; 
+                            window.App.updateUI(); // Mostrar UI incluso sin datos
+                        }
+                    });
+
+                } catch (e) {
+                    console.error("Error during Firebase initialization or sign in: ", e);
+                    window.App.showMessage("Error crítico al iniciar la aplicación.", 'error');
+                    window.App.isAuthReady = true;
+                    window.App.updateUI(); 
+                }
+            },
+
+            /**
+             * 2. Establece los listeners de tiempo real para Workouts y Templates.
+             */
+            setupFirestoreListeners: () => {
+                if (!window.App.isAuthReady || !window.App.userId) return;
+
+                const db = window.App.db;
+                const uid = window.App.userId;
+
+                // A. Listener para ENTRENAMIENTOS (Workouts)
+                const workoutsRef = collection(db, window.App.getWorkoutCollectionPath(uid));
+                
+                // NOTA: No usamos orderBy() en la query para evitar errores de indexación, 
+                // la ordenación se hará en memoria en renderHistoryView().
+                onSnapshot(workoutsRef, (snapshot) => {
+                    const newWorkouts = [];
+                    snapshot.forEach((doc) => {
+                        newWorkouts.push(doc.data());
+                    });
+                    window.App.workouts = newWorkouts;
+                    console.log(`[Firestore] Workouts actualizados: ${newWorkouts.length}`);
+
+                    // Refrescar vistas que dependen de los workouts
+                    if (window.App.currentView === 'history') {
+                        window.App.renderHistoryView();
+                    }
+                    // Si la UI estaba en estado de carga, refrescarla
+                    window.App.updateUI(); 
+                }, (error) => {
+                    console.error("Error fetching workouts snapshot: ", error);
+                    window.App.showMessage("Error al sincronizar entrenamientos. Revisa tu conexión.", 'error');
+                });
+
+
+                // B. Listener para PLANTILLAS (Templates)
+                const templatesRef = collection(db, window.App.getTemplateCollectionPath(uid));
+
+                onSnapshot(templatesRef, (snapshot) => {
+                    const newTemplates = [];
+                    snapshot.forEach((doc) => {
+                        newTemplates.push(doc.data());
+                    });
+                    window.App.templates = newTemplates;
+                    console.log(`[Firestore] Plantillas actualizadas: ${newTemplates.length}`);
+                    
+                    // Refrescar vistas que dependen de las plantillas
+                    if (window.App.currentView === 'planning') {
+                        window.App.renderPlanningView();
+                    }
+                    window.App.updateUI();
+                }, (error) => {
+                    console.error("Error fetching templates snapshot: ", error);
+                    window.App.showMessage("Error al sincronizar plantillas. Revisa tu conexión.", 'error');
+                });
+            },
+            
+            // --- OTRAS FUNCIONES MANTENIDAS (MODALES, LOGICA DE UI) ---
+            
+            // Función para mostrar mensajes temporales
             showMessage(text, type = 'info') {
                 const container = document.getElementById('system-message-container');
                 const messageEl = document.createElement('div');
@@ -221,36 +333,20 @@
                 }, 4000);
             },
 
-            // ELIMINADA: initializeAuth
-            // ELIMINADA: setupFirestoreListeners
-
-            // Cambiar fecha y cargar datos correspondientes
-            changeDate: (newDate) => {
-                window.App.currentWorkoutDate = newDate;
-                window.App.currentLog = { 
-                    id: crypto.randomUUID(), 
-                    date: newDate, 
-                    name: '', 
-                    exercises: [] 
-                };
-                window.App.renderLogView();
-            },
-
-            // Carga un entrenamiento ESPECÍFICO por su ID (usado para la edición desde historial)
+            // Cargar log para edición
             loadLogForId: (id) => {
                 const existingWorkout = window.App.workouts.find(w => w.id === id);
                 if (existingWorkout) {
-                    // Cargar una copia profunda del entrenamiento existente
                     window.App.currentLog = JSON.parse(JSON.stringify(existingWorkout));
-                    window.App.currentWorkoutDate = existingWorkout.date; // Sincroniza la fecha
+                    window.App.currentWorkoutDate = existingWorkout.date; 
                     window.App.renderLogView();
-                    window.App.setView('log'); // Mueve a la vista de log para editar
+                    window.App.setView('log'); 
                 } else {
                     window.App.showMessage("Entrenamiento no encontrado.", 'error');
                 }
             },
 
-            // Log: Guardar el entrenamiento actual (Añadido refresco de vistas)
+            // Log: Guardar el entrenamiento actual
             saveCurrentWorkout: async () => {
                 const log = window.App.currentLog;
                 const today = new Date().toISOString().substring(0, 10);
@@ -273,14 +369,14 @@
                 const result = await window.App.saveWorkout(logToSave);
 
                 if (result.success) {
-                    // Refrescar vistas que dependen de los datos guardados
+                    // Refrescar vistas que dependen de los datos guardados (aunque onSnapshot lo hará)
                     window.App.renderHistoryView();
 
                     // 5. Si el guardado fue exitoso:
                     if (window.App.currentWorkoutDate === today) {
                         // Caso: Guardando el entrenamiento de HOY.
                         window.App.currentLog = { 
-                            id: crypto.randomUUID(), // ¡Nuevo ID!
+                            id: crypto.randomUUID(), 
                             date: today, 
                             name: '', 
                             exercises: [] 
@@ -299,7 +395,17 @@
                 }
             },
 
-            // Log: Añadir nuevo ejercicio (MANTENIDA)
+            // Funciones CRUD de Log (MANTENIDAS)
+            changeDate: (newDate) => {
+                window.App.currentWorkoutDate = newDate;
+                window.App.currentLog = { 
+                    id: crypto.randomUUID(), 
+                    date: newDate, 
+                    name: '', 
+                    exercises: [] 
+                };
+                window.App.renderLogView();
+            },
             addExercise: (exerciseName = '') => {
                 window.App.currentLog.exercises.push({
                     id: crypto.randomUUID(),
@@ -308,30 +414,20 @@
                 });
                 window.App.renderLogView();
             },
-
-            // Log: Eliminar ejercicio (MANTENIDA)
             removeExercise: (exIndex) => {
                 window.App.currentLog.exercises.splice(exIndex, 1);
                 window.App.renderLogView(); 
             },
-
-            // Log: Actualizar nombre del entrenamiento (MANTENIDA)
             updateWorkoutName: (name) => {
                 window.App.currentLog.name = name;
             },
-
-            // Log: Actualizar nombre del ejercicio (MANTENIDA)
             updateExerciseName: (exIndex, name) => {
                 window.App.currentLog.exercises[exIndex].name = name;
             },
-
-            // Log: Añadir nuevo set (MANTENIDA)
             addSet: (exIndex) => {
                 window.App.currentLog.exercises[exIndex].sets.push({ weight: 0, reps: 0 });
                 window.App.renderLogView();
             },
-
-            // Log: Eliminar set (MANTENIDA)
             removeSet: (exIndex, setIndex) => {
                 window.App.currentLog.exercises[exIndex].sets.splice(setIndex, 1);
                 if (window.App.currentLog.exercises[exIndex].sets.length === 0) {
@@ -339,14 +435,10 @@
                 }
                 window.App.renderLogView(); 
             },
-
-            // Log: Actualizar datos de set (peso/reps) (MANTENIDA)
             updateSetData: (exIndex, setIndex, field, value) => {
                 const numValue = value === '' ? 0 : parseFloat(value);
                 window.App.currentLog.exercises[exIndex].sets[setIndex][field] = numValue;
             },
-
-            // Log: Mostrar rendimiento anterior (MANTENIDA)
             fetchPrevious: async (exIndex) => {
                 const exercise = window.App.currentLog.exercises[exIndex];
                 if (!exercise.name.trim()) {
@@ -375,8 +467,6 @@
                     content.innerHTML = '¡Excelente! Parece que es la primera vez que registras este ejercicio.';
                 }
             },
-
-            // History: Ver detalles del entrenamiento (MANTENIDA)
             viewWorkoutDetails: (id) => {
                 const workout = window.App.workouts.find(w => w.id === id);
                 if (!workout) return;
@@ -412,9 +502,6 @@
 
                 window.App.showModal('Detalles del Entrenamiento', detailsHtml);
             },
-
-
-            // Planning: Crear nueva plantilla (MANTENIDA)
             createNewTemplate: () => {
                 window.App.showTemplateEditor({
                     id: crypto.randomUUID(),
@@ -422,8 +509,6 @@
                     exercises: []
                 });
             },
-
-            // Planning: Editar plantilla existente (MANTENIDA)
             editTemplate: (templateId) => {
                 const template = window.App.templates.find(t => t.id === templateId);
                 if (template) {
@@ -432,8 +517,6 @@
                     window.App.showMessage("Plantilla no encontrada.", 'error');
                 }
             },
-
-            // Planning: Cargar plantilla en el log (abre el modal selector) (MANTENIDA)
             loadTemplateSelector: () => {
                 if (window.App.templates.length === 0) {
                     window.App.showMessage("Aún no tienes plantillas guardadas. Crea una en la vista de Planificación.", 'info');
@@ -448,8 +531,6 @@
 
                 window.App.showModal('Seleccionar Plantilla para Hoy', list);
             },
-
-            // Planning: Aplicar plantilla al log actual (MANTENIDA)
             applyTemplate: (templateId) => {
                 const template = window.App.templates.find(t => t.id === templateId);
                 if (!template) return;
@@ -467,9 +548,6 @@
                 window.App.renderLogView();
                 window.App.showMessage(`Plantilla '${template.name}' cargada en el registro.`, 'success');
             },
-
-
-            // Planning: Confirmar eliminación de plantilla (MANTENIDA)
             confirmDeleteTemplate: (templateId, templateName) => {
                 const content = `
                     <p class="mb-4 text-center">¿Estás seguro de que quieres eliminar la plantilla **"${templateName}"**? Esta acción no se puede deshacer.</p>
@@ -480,11 +558,7 @@
                 `;
                 window.App.showModal('Confirmar Eliminación', content);
             },
-            
-            // --- MODALES DE LA APLICACIÓN (MANTENIDOS) ---
-
             showTemplateEditor: (templateData) => {
-                // Estado local para la plantilla que se está editando
                 let editingTemplate = JSON.parse(JSON.stringify(templateData));
 
                 const modalTitle = templateData.name === 'Nueva Plantilla' ? 'Crear Plantilla' : 'Editar Plantilla: ' + templateData.name;
@@ -518,10 +592,8 @@
                     `).join('');
                 };
 
-                // Funciones de actualización dentro del modal (se unen al scope de App temporalmente)
                 window.App.updateModalTemplateName = (name) => {
                     editingTemplate.name = name;
-                    // Actualizar título del modal en tiempo real
                     document.getElementById('modal-title').innerHTML = name.trim() ? 'Editar Plantilla: ' + name : 'Crear Plantilla';
                 };
 
@@ -534,17 +606,17 @@
                         name: 'Nuevo Ejercicio',
                         sets: [{ weight: 0, reps: 0 }]
                     });
-                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); 
                 };
 
                 window.App.removeModalExercise = (exIndex) => {
                     editingTemplate.exercises.splice(exIndex, 1);
-                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); 
                 };
                 
                 window.App.addModalSet = (exIndex) => {
                     editingTemplate.exercises[exIndex].sets.push({ weight: 0, reps: 0 });
-                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); 
                 };
 
                 window.App.removeModalSet = (exIndex, setIndex) => {
@@ -552,7 +624,7 @@
                     if (editingTemplate.exercises[exIndex].sets.length === 0) {
                         editingTemplate.exercises[exIndex].sets.push({ weight: 0, reps: 0 });
                     }
-                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); 
                 };
 
                 window.App.updateModalSetData = (exIndex, setIndex, field, value) => {
@@ -566,17 +638,14 @@
                         return;
                     }
                     
-                    // 1. Limpiar sets vacíos si existen y asegurarse de que cada ejercicio tenga al menos un set
                     editingTemplate.exercises.forEach(ex => {
                         if (ex.sets.length === 0) {
                             ex.sets.push({ weight: 0, reps: 0 });
                         }
                     });
 
-                    // 2. Filtrar ejercicios que no tienen nombre
                     editingTemplate.exercises = editingTemplate.exercises.filter(ex => ex.name.trim() !== '');
 
-                    // 3. Validación de contenido
                     if (editingTemplate.exercises.length === 0) {
                         window.App.showMessage("La plantilla debe tener al menos un ejercicio con nombre.", 'error');
                         return;
@@ -585,7 +654,7 @@
                     const result = await window.App.saveTemplate(editingTemplate);
                     if (result.success) {
                         window.App.closeModal();
-                        window.App.renderPlanningView(); // Forzar el refresco de la vista
+                        window.App.renderPlanningView(); 
                     }
                 };
 
@@ -608,9 +677,6 @@
 
                 window.App.showModal(modalTitle, editorContent(templateData), true);
             },
-
-
-            // Modal general para mensajes o interacciones (MANTENIDA)
             showModal: (title, content, isEditor = false) => {
                 const modal = document.getElementById('app-modal');
                 const modalTitle = document.getElementById('modal-title');
@@ -630,7 +696,6 @@
                      modalPanel.classList.remove('max-w-4xl', 'w-11/12'); 
                 }
             },
-
             closeModal: () => {
                 const modal = document.getElementById('app-modal');
                 modal.classList.add('opacity-0', 'pointer-events-none');
@@ -644,9 +709,13 @@
             },
 
             updateUI() {
-                // Al eliminar Firebase, el mensaje de carga se oculta inmediatamente
+                // Muestra u oculta el mensaje de carga
                 const loadingMsg = document.getElementById('loading-message');
-                loadingMsg.classList.add('hidden');
+                if (this.isAuthReady) {
+                     loadingMsg.classList.add('hidden');
+                } else {
+                     loadingMsg.classList.remove('hidden');
+                }
                 
                 // Actualizar pestañas
                 document.querySelectorAll('.nav-button').forEach(button => {
@@ -656,24 +725,26 @@
                     }
                 });
 
-                // Renderizar la vista activa
-                document.querySelectorAll('.view-content').forEach(view => view.classList.add('hidden'));
-                document.getElementById(`view-${this.currentView}`).classList.remove('hidden');
+                // Si la autenticación está lista, renderizar la vista activa
+                if (this.isAuthReady) {
+                    document.querySelectorAll('.view-content').forEach(view => view.classList.add('hidden'));
+                    document.getElementById(`view-${this.currentView}`).classList.remove('hidden');
 
-                switch (this.currentView) {
-                    case 'log':
-                        this.renderLogView();
-                        break;
-                    case 'history':
-                        this.renderHistoryView();
-                        break;
-                    case 'planning':
-                        this.renderPlanningView();
-                        break;
+                    switch (this.currentView) {
+                        case 'log':
+                            this.renderLogView();
+                            break;
+                        case 'history':
+                            this.renderHistoryView();
+                            break;
+                        case 'planning':
+                            this.renderPlanningView();
+                            break;
+                    }
                 }
             },
 
-            // 1. VISTA DE REGISTRO DIARIO (Eliminada referencia a ID de Sesión)
+            // 1. VISTA DE REGISTRO DIARIO
             renderLogView() {
                 const logView = document.getElementById('view-log');
                 const logData = this.currentLog; 
@@ -757,7 +828,10 @@
                 logView.innerHTML = `
                     <h2 class="text-4xl font-extrabold text-gray-900 mb-8 border-b pb-2 border-indigo-200">Registro Diario</h2>
 
-                    <!-- ELIMINADO: ID de Sesión -->
+                    <!-- ID de Usuario para depuración y referencia de sync -->
+                    <div class="text-sm text-gray-500 mb-4 p-2 bg-indigo-50 rounded-lg text-center">
+                        ID de Usuario (Sync Cloud): <strong>${this.userId ? this.userId : 'Cargando...'}</strong>
+                    </div>
 
                     <!-- Selector de Fecha y Nombre de Sesión (Diseño de Tarjeta Elevada) -->
                     <div class="bg-white p-5 rounded-2xl shadow-2xl mb-8 border border-indigo-200">
@@ -795,9 +869,10 @@
                 `;
             },
 
-            // 2. VISTA DE HISTORIAL (MANTENIDA, usa this.workouts)
+            // 2. VISTA DE HISTORIAL
             renderHistoryView() {
                 const historyView = document.getElementById('view-history');
+                // Ordenar en memoria (ya que los datos están sincronizados y son reactivos)
                 const sortedWorkouts = [...this.workouts].sort((a, b) => {
                     const dateComparison = b.date.localeCompare(a.date);
                     if (dateComparison !== 0) return dateComparison;
@@ -822,17 +897,18 @@
 
                 historyView.innerHTML = `
                     <h2 class="text-4xl font-extrabold text-gray-900 mb-8 border-b pb-2 border-indigo-200">Historial de Entrenamientos</h2>
-                    <p class="text-gray-600 mb-6">Aquí puedes ver un resumen de todos tus entrenamientos registrados. Haz clic en una sesión para ver los detalles.</p>
+                    <p class="text-gray-600 mb-6">Todos tus entrenamientos están sincronizados en la nube y se actualizan en tiempo real.</p>
+
                     <div id="history-list">
                         ${sortedWorkouts.length > 0
                             ? sortedWorkouts.map(renderWorkoutSummary).join('')
-                            : '<p class="text-center text-gray-500 mt-8 p-6 bg-gray-100 rounded-xl shadow-inner border border-gray-200">Aún no has registrado ningún entrenamiento.</p>'
+                            : '<p class="text-center text-gray-500 mt-8 p-6 bg-gray-100 rounded-xl shadow-inner border border-gray-200">Aún no has registrado ningún entrenamiento. ¡Sincroniza tu primer log!</p>'
                         }
                     </div>
                 `;
             },
 
-            // 3. VISTA DE PLANIFICACIÓN (MANTENIDA, usa this.templates)
+            // 3. VISTA DE PLANIFICACIÓN
             renderPlanningView() {
                 const planningView = document.getElementById('view-planning');
 
@@ -863,7 +939,7 @@
                     <!-- Botón Crear Nueva Plantilla (Indigo) -->
                     <button onclick="window.App.createNewTemplate()" class="w-full py-3 bg-indigo-600 text-white rounded-2xl shadow-xl hover:bg-indigo-700 transition duration-150 mt-4 mb-8 font-bold text-lg flex items-center justify-center">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
-                        Crear Nueva Plantilla
+                        Añadir Nueva Plantilla
                     </button>
 
                     <h3 class="text-2xl font-semibold text-gray-700 mb-4 border-b pb-1">Mis Plantillas</h3>
@@ -879,8 +955,8 @@
         
         // --- INICIALIZACIÓN DE LA APLICACIÓN ---
         window.onload = () => {
-             // Inicia la UI ya que la autenticación (local) es instantánea
-             window.App.updateUI(); 
+             // Inicia la autenticación de Firebase
+             window.App.initializeAuth(); 
         };
 
     </script>
@@ -931,30 +1007,21 @@
             </nav>
         </header>
 
-        <!-- Mensaje de Carga/Usuario -->
-        <div id="loading-message" class="text-center py-12 text-gray-500 text-xl font-medium hidden">
-            <!-- Este mensaje ahora está oculto por defecto ya que la carga es instantánea -->
+        <!-- Mensaje de Carga/Usuario (Ahora más informativo) -->
+        <div id="loading-message" class="text-center py-12 text-gray-600 text-xl font-medium flex flex-col items-center justify-center">
+            <div class="spinner h-12 w-12 border-4 border-t-4 border-gray-200 rounded-full mb-4"></div>
+            <p>Conectando y sincronizando tus datos con la nube...</p>
         </div>
 
         <!-- Contenido de las Vistas -->
         <main class="mt-8">
-            <!-- Vista de Registro Diario -->
-            <div id="view-log" class="view-content">
-                <!-- Contenido generado por renderLogView() -->
-            </div>
-
-            <!-- Vista de Historial -->
-            <div id="view-history" class="view-content hidden">
-                <!-- Contenido generado por renderHistoryView() -->
-            </div>
-
-            <!-- Vista de Planificación (Plantillas) -->
-            <div id="view-planning" class="view-content hidden">
-                <!-- Contenido generado por renderPlanningView() -->
-            </div>
-
+            <!-- Las vistas se renderizarán solo cuando isAuthReady sea true -->
+            <div id="view-log" class="view-content hidden"></div>
+            <div id="view-history" class="view-content hidden"></div>
+            <div id="view-planning" class="view-content hidden"></div>
         </main>
     </div>
 </body>
 </html>
+
 
