@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entrenamiento Personal | Registro de Sobrecarga Progresiva</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Configuración de fuente y fondo */
+        :root {
+            --primary: #4f46e5; /* Indigo-600 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #eef2ff; /* Indigo-50 para un fondo más suave */
+        }
+        .container-card {
+            min-height: 90vh;
+            /* Estilo de tarjeta principal mejorado */
+            border: 1px solid #c7d2fe; /* Indigo-200 */
+        }
+        /* Estilo para el botón de borrar set */
+        .remove-set-btn {
+            transition: transform 0.1s ease;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        .remove-set-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        /* Estilo para inputs numericos */
+        input[type="number"]::-webkit-inner-spin-button, 
+        input[type="number"]::-webkit-outer-spin-button { 
+          -webkit-appearance: none; 
+          margin: 0; 
+        }
+        input[type="number"] {
+          -moz-appearance: textfield;
+        }
+
+        /* Estilo de la barra de navegación */
+        .nav-button {
+            position: relative;
+            z-index: 10;
+            transition: all 0.3s ease;
+            /* Usamos sombra oscura para que se vea bien sobre el fondo claro */
+            box-shadow: 0 4px #1e1b4b; /* Indigo-900 */ 
+            transform: translateY(0);
+            color: white; /* Color base del texto de los botones de navegación */
+            background-color: #4f46e5; /* Indigo-600 */
+        }
+        .nav-button:active {
+            box-shadow: 0 2px #1e1b4b;
+            transform: translateY(2px);
+        }
+        .nav-button.active {
+            background-color: #4338ca; /* Indigo-700 activo para más contraste */
+            color: white;
+            box-shadow: 0 6px #3730a3; 
+        }
+    </style>
+    <!-- Carga de Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // IMPORTANTE: Se añade deleteDoc para la funcionalidad de eliminar plantilla
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, orderBy, limit, where, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Variables de Firebase y Configuración (OBLIGATORIO) ---
+        let app;
+        let db;
+        let auth;
+        let userId = 'loading';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'entrenamiento-tracker-default';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        
+        // Se inicializa window.App inmediatamente para evitar errores de desestructuración
+        window.App = {};
+
+        // --- Funciones de Utilidad y Estado Global de la Aplicación (fusionadas en window.App) ---
+        Object.assign(window.App, {
+            currentView: 'log', // 'log', 'history', 'planning'
+            isAuthReady: false,
+            userId: null,
+            db: null,
+            // workouts ahora es un array de objetos, no un mapa por fecha, para admitir duplicados.
+            workouts: [], 
+            templates: [], 
+            currentWorkoutDate: new Date().toISOString().substring(0, 10),
+            // El log actual DEBE tener un ID único para el guardado.
+            currentLog: { 
+                id: crypto.randomUUID(), 
+                date: new Date().toISOString().substring(0, 10), 
+                name: '', 
+                exercises: [] 
+            },
+            previousPerformance: null,
+
+            // Rutas de Firestore
+            getWorkoutCollectionPath: (uid) => {
+                return `artifacts/${appId}/users/${uid}/workouts`;
+            },
+
+            getTemplateCollectionPath: (uid) => {
+                return `artifacts/${appId}/users/${uid}/templates`;
+            },
+
+            // --- Funciones de Utilidad de Firebase (Ahora métodos de App) ---
+
+            // Guarda o actualiza un entrenamiento (USA EL ID DEL LOG PARA EL DOCUMENTO)
+            saveWorkout: async (workout) => {
+                if (!window.App.isAuthReady || !window.App.userId || !window.App.db) return { success: false, error: 'Auth not ready' };
+
+                // Usamos el ID único del workout para la referencia del documento
+                const workoutRef = doc(window.App.db, window.App.getWorkoutCollectionPath(window.App.userId), workout.id);
+
+                try {
+                    await setDoc(workoutRef, workout, { merge: true });
+                    window.App.showMessage(`Entrenamiento para el ${workout.date} guardado exitosamente.`, 'success');
+                    return { success: true };
+                } catch (error) {
+                    console.error("Error saving workout:", error);
+                    window.App.showMessage(`Error al guardar: ${error.message}`, 'error');
+                    return { success: false, error };
+                }
+            },
+
+            // Guarda o actualiza una plantilla
+            saveTemplate: async (template) => {
+                if (!window.App.isAuthReady || !window.App.userId || !window.App.db) return { success: false, error: 'Auth not ready' };
+
+                // Usamos el ID de la plantilla como ID del documento
+                const templateRef = doc(window.App.db, window.App.getTemplateCollectionPath(window.App.userId), template.id);
+
+                try {
+                    await setDoc(templateRef, template, { merge: true });
+                    window.App.showMessage(`Plantilla '${template.name}' guardada.`, 'success');
+                    return { success: true };
+                } catch (error) {
+                    console.error("Error saving template:", error);
+                    window.App.showMessage(`Error al guardar plantilla: ${error.message}`, 'error');
+                    return { success: false, error };
+                }
+            },
+
+            // Elimina una plantilla
+            deleteTemplate: async (templateId) => {
+                if (!window.App.isAuthReady || !window.App.userId || !window.App.db) return;
+                try {
+                    const templateRef = doc(window.App.db, window.App.getTemplateCollectionPath(window.App.userId), templateId);
+                    await deleteDoc(templateRef);
+                    window.App.showMessage(`Plantilla eliminada exitosamente.`, 'success');
+                } catch (error) {
+                    console.error("Error deleting template:", error);
+                    window.App.showMessage(`Error al eliminar plantilla: ${error.message}`, 'error');
+                }
+            },
+
+            // Cargar el rendimiento anterior de un ejercicio específico
+            fetchPreviousPerformance: async (exerciseName) => {
+                if (!window.App.isAuthReady || !window.App.userId || !window.App.db || !exerciseName) return null;
+
+                // Buscamos directamente en el array de workouts cargado por el listener
+                // Ordenamos por fecha descendente
+                const sortedWorkouts = [...window.App.workouts].sort((a, b) => b.date.localeCompare(a.date));
+
+                // Iteramos sobre los documentos más recientes (limitando a 15)
+                for (let i = 0; i < Math.min(sortedWorkouts.length, 15); i++) {
+                    const workout = sortedWorkouts[i];
+                    const targetExercise = workout.exercises.find(ex => ex.name.toLowerCase() === exerciseName.toLowerCase());
+                    if (targetExercise) {
+                        return {
+                            date: workout.date,
+                            sets: targetExercise.sets,
+                            name: exerciseName
+                        };
+                    }
+                }
+                
+                return null;
+            },
+
+            // Función para mostrar mensajes temporales
+            showMessage(text, type = 'info') {
+                const container = document.getElementById('system-message-container');
+                const messageEl = document.createElement('div');
+                let bgColor = '';
+                let icon = '';
+
+                switch (type) {
+                    case 'success':
+                        bgColor = 'bg-green-500';
+                        icon = '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" /></svg>';
+                        break;
+                    case 'error':
+                        bgColor = 'bg-red-500';
+                        icon = '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" /></svg>';
+                        break;
+                    default:
+                        bgColor = 'bg-blue-500';
+                        icon = '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" /></svg>';
+                }
+
+                messageEl.className = `${bgColor} text-white p-3 rounded-lg shadow-xl mb-3 flex items-center transform transition-transform duration-300`;
+                messageEl.innerHTML = icon + `<span>${text}</span>`;
+                
+                container.appendChild(messageEl);
+
+                // Auto-destruir mensaje después de 4 segundos
+                setTimeout(() => {
+                    messageEl.classList.add('opacity-0', 'scale-90');
+                    setTimeout(() => messageEl.remove(), 300);
+                }, 4000);
+            },
+
+            // --- Funciones de Lógica de la Aplicación ---
+
+            // Iniciar la sesión con el token de Firebase
+            initializeAuth: async () => {
+                auth = getAuth(app);
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        window.App.showMessage("Autenticación con éxito.", 'success');
+                    } else {
+                        await signInAnonymously(auth);
+                        window.App.showMessage("Sesión anónima iniciada.", 'info');
+                    }
+                } catch (error) {
+                    console.error("Error durante la autenticación:", error);
+                    window.App.showMessage(`Error de autenticación: ${error.message}`, 'error');
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        window.App.userId = user.uid;
+                        window.App.isAuthReady = true;
+                        window.App.db = db;
+                        window.App.updateUI();
+                        // Inicia los listeners de Firestore una vez autenticado
+                        window.App.setupFirestoreListeners();
+                    } else {
+                        window.App.userId = null;
+                        window.App.isAuthReady = true;
+                        window.App.updateUI();
+                    }
+                });
+            },
+
+            // Establece los listeners para entrenamientos y plantillas
+            setupFirestoreListeners: () => {
+                if (!window.App.isAuthReady || !window.App.userId || !window.App.db) return;
+
+                // Listener para Entrenamientos (Workouts)
+                const workoutsColRef = collection(window.App.db, window.App.getWorkoutCollectionPath(window.App.userId));
+                onSnapshot(workoutsColRef, (snapshot) => {
+                    const newWorkouts = [];
+                    snapshot.forEach(doc => {
+                        newWorkouts.push(doc.data());
+                    });
+                    // Almacenamos como ARRAY, no como mapa, para permitir duplicados de fecha
+                    window.App.workouts = newWorkouts; 
+                    console.log("Workouts loaded:", window.App.workouts.length);
+
+                    // Asegurar que la vista actual se refresque
+                    if (window.App.currentView === 'log') {
+                        window.App.renderLogView(); 
+                    } else if (window.App.currentView === 'history') {
+                        window.App.renderHistoryView();
+                    }
+                });
+                
+                // Listener para Plantillas (Templates)
+                const templatesColRef = collection(window.App.db, window.App.getTemplateCollectionPath(window.App.userId));
+                onSnapshot(templatesColRef, (snapshot) => {
+                    window.App.templates = [];
+                    snapshot.forEach(doc => {
+                        window.App.templates.push(doc.data());
+                    });
+                    console.log("Templates loaded:", window.App.templates.length);
+                    // Refrescar la vista de planificación
+                    if (window.App.currentView === 'planning') {
+                        window.App.renderPlanningView();
+                    }
+                });
+            },
+
+            // Cambiar fecha y cargar datos correspondientes
+            changeDate: (newDate) => {
+                window.App.currentWorkoutDate = newDate;
+                // Al cambiar la fecha, siempre creamos un log vacío con un nuevo ID, 
+                // a menos que se cargue un workout específico desde el historial.
+                window.App.currentLog = { 
+                    id: crypto.randomUUID(), 
+                    date: newDate, 
+                    name: '', 
+                    exercises: [] 
+                };
+                window.App.renderLogView();
+            },
+
+            // Carga un entrenamiento ESPECÍFICO por su ID (usado para la edición desde historial)
+            loadLogForId: (id) => {
+                const existingWorkout = window.App.workouts.find(w => w.id === id);
+                if (existingWorkout) {
+                    // Cargar una copia profunda del entrenamiento existente
+                    window.App.currentLog = JSON.parse(JSON.stringify(existingWorkout));
+                    window.App.currentWorkoutDate = existingWorkout.date; // Sincroniza la fecha
+                    window.App.renderLogView();
+                    window.App.setView('log'); // Mueve a la vista de log para editar
+                } else {
+                    window.App.showMessage("Entrenamiento no encontrado.", 'error');
+                }
+            },
+
+            // Log: Guardar el entrenamiento actual
+            saveCurrentWorkout: async () => {
+                const log = window.App.currentLog;
+                const today = new Date().toISOString().substring(0, 10);
+                
+                // 1. Limpieza de sets vacíos para la persistencia
+                log.exercises.forEach(ex => {
+                    ex.sets = ex.sets.filter(set => set.weight > 0 || set.reps > 0);
+                });
+
+                // 2. Validación de contenido
+                if (!log.exercises.length || !log.exercises.some(ex => ex.sets.length > 0)) {
+                    window.App.showMessage("Asegúrate de registrar al menos un set con peso o repeticiones en un ejercicio nombrado.", 'error');
+                    return;
+                }
+                
+                // 3. Clonar el log antes de guardarlo.
+                const logToSave = JSON.parse(JSON.stringify(log));
+
+                // 4. Guardar el entrenamiento
+                const result = await window.App.saveWorkout(logToSave);
+
+                if (result.success) {
+                    // 5. Si el guardado fue exitoso:
+                    
+                    // Comprobamos si estamos editando el día de hoy
+                    if (window.App.currentWorkoutDate === today) {
+                        // A. Caso: Guardando el entrenamiento de HOY.
+                        
+                        // Vacíamos el log actual y generamos un NUEVO ID, listo para un segundo entrenamiento hoy.
+                        window.App.currentLog = { 
+                            id: crypto.randomUUID(), // ¡Nuevo ID!
+                            date: today, 
+                            name: '', 
+                            exercises: [] 
+                        }; 
+                        
+                        // Forzamos el renderizado para mostrar la pizarra limpia
+                        window.App.renderLogView();
+                        
+                        // B. Caso: Guardando o editando una fecha PASADA/FUTURA.
+                    } else {
+                        // Forzamos la creación de un nuevo log con un nuevo ID para la fecha anterior.
+                        // Esto evita que, al regresar a la vista de log, siga mostrando el log que acabamos de editar.
+                        window.App.currentLog = { 
+                            id: crypto.randomUUID(), 
+                            date: window.App.currentWorkoutDate, 
+                            name: '', 
+                            exercises: [] 
+                        };
+                        
+                        // Movemos a historial para confirmar la acción de edición
+                        window.App.setView('history');
+                    }
+                }
+            },
+
+            // Log: Añadir nuevo ejercicio
+            addExercise: (exerciseName = '') => {
+                window.App.currentLog.exercises.push({
+                    id: crypto.randomUUID(),
+                    name: exerciseName,
+                    sets: [{ weight: 0, reps: 0 }]
+                });
+                window.App.renderLogView();
+            },
+
+            // Log: Eliminar ejercicio
+            removeExercise: (exIndex) => {
+                // Elimina el ejercicio en la posición exIndex
+                window.App.currentLog.exercises.splice(exIndex, 1);
+                // Vuelve a dibujar la vista para reflejar el cambio
+                window.App.renderLogView(); 
+            },
+
+            // Log: Actualizar nombre del entrenamiento
+            updateWorkoutName: (name) => {
+                window.App.currentLog.name = name;
+            },
+
+            // Log: Actualizar nombre del ejercicio
+            updateExerciseName: (exIndex, name) => {
+                window.App.currentLog.exercises[exIndex].name = name;
+            },
+
+            // Log: Añadir nuevo set
+            addSet: (exIndex) => {
+                window.App.currentLog.exercises[exIndex].sets.push({ weight: 0, reps: 0 });
+                window.App.renderLogView();
+            },
+
+            // Log: Eliminar set
+            removeSet: (exIndex, setIndex) => {
+                // Elimina el set en la posición setIndex del ejercicio exIndex
+                window.App.currentLog.exercises[exIndex].sets.splice(setIndex, 1);
+                
+                // Si el ejercicio se queda sin sets, añadir uno vacío para mantener la fila de inputs
+                if (window.App.currentLog.exercises[exIndex].sets.length === 0) {
+                    window.App.currentLog.exercises[exIndex].sets.push({ weight: 0, reps: 0 });
+                }
+                
+                // Vuelve a dibujar la vista para reflejar el cambio
+                window.App.renderLogView(); 
+            },
+
+            // Log: Actualizar datos de set (peso/reps)
+            updateSetData: (exIndex, setIndex, field, value) => {
+                // Asegurarse de que el valor sea numérico, si es vacío, dejarlo como 0 para firebase
+                const numValue = value === '' ? 0 : parseFloat(value);
+                window.App.currentLog.exercises[exIndex].sets[setIndex][field] = numValue;
+            },
+
+            // Log: Mostrar rendimiento anterior
+            fetchPrevious: async (exIndex) => {
+                const exercise = window.App.currentLog.exercises[exIndex];
+                if (!exercise.name.trim()) {
+                    window.App.showMessage("Por favor, nombra el ejercicio antes de buscar su progresión.", 'info');
+                    return;
+                }
+                
+                const container = document.getElementById(`prev-perf-${exIndex}`);
+                const content = document.getElementById(`prev-perf-content-${exIndex}`);
+                
+                // Toggle para mostrar/ocultar
+                const isHidden = container.classList.contains('hidden');
+                if (!isHidden) {
+                    container.classList.add('hidden');
+                    return;
+                }
+
+
+                container.classList.remove('hidden');
+                content.innerHTML = '<span class="text-indigo-500">Cargando rendimiento anterior...</span>';
+
+                const prev = await window.App.fetchPreviousPerformance(exercise.name);
+
+                if (prev) {
+                    const setsSummary = prev.sets.map(set => `<span class="font-bold">${set.weight || 0}kg</span> x ${set.reps || 0} reps`).join(' | ');
+                    content.innerHTML = `Entrenamiento anterior (${prev.date}): ${setsSummary}`;
+                } else {
+                    content.innerHTML = '¡Excelente! Parece que es la primera vez que registras este ejercicio.';
+                }
+            },
+
+            // History: Ver detalles del entrenamiento
+            viewWorkoutDetails: (id) => {
+                const workout = window.App.workouts.find(w => w.id === id);
+                if (!workout) return;
+
+                let detailsHtml = `
+                    <h3 class="text-2xl font-bold mb-4 text-indigo-700">${workout.name || 'Entrenamiento'} - ${workout.date}</h3>
+                    ${workout.exercises.map(ex => `
+                        <div class="mb-4 p-4 bg-gray-50 rounded-xl shadow-inner border border-gray-200">
+                            <p class="font-semibold text-lg text-gray-800 border-b pb-1 mb-2">${ex.name}</p>
+                            <div class="grid grid-cols-3 gap-2 text-sm text-gray-700">
+                                <span class="font-bold">Set</span>
+                                <span class="font-bold">Peso (kg)</span>
+                                <span class="font-bold">Reps</span>
+                            </div>
+                            ${ex.sets.map((set, i) => `
+                                <div class="grid grid-cols-3 gap-2 text-sm text-gray-600 border-t border-gray-100 py-1">
+                                    <span>${i + 1}</span>
+                                    <span class="font-semibold text-indigo-600">${set.weight || 0}</span>
+                                    <span class="font-semibold text-indigo-600">${set.reps || 0}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `).join('')}
+                    <div class="flex justify-end pt-4 space-x-2">
+                        <!-- Usamos loadLogForId para cargar el workout específico con su ID -->
+                        <button onclick="window.App.loadLogForId('${id}'); window.App.closeModal();" class="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition shadow-md">
+                            Editar
+                        </button>
+                        <button onclick="window.App.closeModal()" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-lg hover:bg-gray-400 transition shadow-md">
+                            Cerrar
+                        </button>
+                    </div>
+                `;
+
+                // Usamos el modal de sistema para mostrar los detalles
+                window.App.showModal('Detalles del Entrenamiento', detailsHtml);
+            },
+
+
+            // Planning: Crear nueva plantilla (limpia el currentLog y va a la vista de edición de plantilla)
+            createNewTemplate: () => {
+                // Usamos el modal de edición de plantillas
+                window.App.showTemplateEditor({
+                    id: crypto.randomUUID(), // Nuevo ID para la plantilla
+                    name: 'Nueva Plantilla',
+                    exercises: []
+                });
+            },
+
+            // Planning: Editar plantilla existente
+            editTemplate: (templateId) => {
+                const template = window.App.templates.find(t => t.id === templateId);
+                if (template) {
+                    window.App.showTemplateEditor(template);
+                } else {
+                    window.App.showMessage("Plantilla no encontrada.", 'error');
+                }
+            },
+
+            // Planning: Cargar plantilla en el log (abre el modal selector)
+            loadTemplateSelector: () => {
+                if (window.App.templates.length === 0) {
+                    window.App.showMessage("Aún no tienes plantillas guardadas. Crea una en la vista de Planificación.", 'info');
+                    return;
+                }
+                const list = window.App.templates.map(t => `
+                    <div class="flex justify-between items-center bg-indigo-50 p-3 rounded-xl mb-2 border border-indigo-200">
+                        <span class="font-medium text-gray-800">${t.name} (${t.exercises.length} ejercicios)</span>
+                        <button onclick="window.App.applyTemplate('${t.id}')" class="px-3 py-1 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-md">Cargar</button>
+                    </div>
+                `).join('');
+
+                window.App.showModal('Seleccionar Plantilla para Hoy', list);
+            },
+
+            // Planning: Aplicar plantilla al log actual
+            applyTemplate: (templateId) => {
+                const template = window.App.templates.find(t => t.id === templateId);
+                if (!template) return;
+
+                // Aplicar la estructura de la plantilla al log actual
+                // NOTA: Mantenemos el ID y la fecha del currentLog, solo actualizamos el contenido
+                window.App.currentLog.name = template.name;
+                // Clonar los ejercicios para que sean independientes del objeto template
+                window.App.currentLog.exercises = template.exercises.map(ex => ({
+                    ...ex, 
+                    sets: ex.sets.map(set => ({ 
+                        weight: set.weight || 0, // Asegurar valores iniciales para el log
+                        reps: set.reps || 0 
+                    })) 
+                }));
+
+                window.App.closeModal();
+                window.App.renderLogView();
+                window.App.showMessage(`Plantilla '${template.name}' cargada en el registro.`, 'success');
+            },
+
+
+            // Planning: Confirmar eliminación de plantilla
+            confirmDeleteTemplate: (templateId, templateName) => {
+                const content = `
+                    <p class="mb-4 text-center">¿Estás seguro de que quieres eliminar la plantilla **"${templateName}"**? Esta acción no se puede deshacer.</p>
+                    <div class="flex justify-center space-x-3 pt-4 border-t mt-4">
+                        <button onclick="window.App.closeModal()" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-lg hover:bg-gray-400 transition">Cancelar</button>
+                        <button onclick="window.App.deleteTemplate('${templateId}'); window.App.closeModal();" class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition">Eliminar</button>
+                    </div>
+                `;
+                window.App.showModal('Confirmar Eliminación', content);
+            },
+            
+            // --- MODALES DE LA APLICACIÓN ---
+
+            // Modal para Edición/Creación de Plantillas
+            showTemplateEditor: (templateData) => {
+                // Estado local para la plantilla que se está editando
+                let editingTemplate = JSON.parse(JSON.stringify(templateData));
+
+                const modalTitle = templateData.name === 'Nueva Plantilla' ? 'Crear Plantilla' : 'Editar Plantilla: ' + templateData.name;
+                
+                const renderTemplateExercises = () => {
+                    if (editingTemplate.exercises.length === 0) {
+                        return '<p class="text-center text-gray-500 mt-8 mb-4 p-4 bg-gray-100 rounded-xl">Añade ejercicios para construir tu plantilla.</p>';
+                    }
+                    return editingTemplate.exercises.map((exercise, exIndex) => `
+                        <div class="bg-white p-4 rounded-xl shadow border border-indigo-100 mb-4">
+                            <div class="flex justify-between items-start mb-2">
+                                <input type="text" value="${exercise.name}" data-index="${exIndex}" oninput="window.App.updateModalTemplateData('name', this.value, ${exIndex})" class="text-lg font-semibold w-full focus:outline-none border-b border-indigo-300 pb-1" placeholder="Nombre del Ejercicio (Ej. Press Banca)">
+                                <button onclick="window.App.removeModalExercise(${exIndex})" class="ml-3 text-red-500 hover:text-red-700 p-1 bg-red-100 rounded-full transition">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                                </button>
+                            </div>
+                            <p class="mt-3 text-sm font-medium text-gray-600">Sets/Reps sugeridas:</p>
+                            ${exercise.sets.map((set, setIndex) => `
+                                <div class="flex space-x-3 items-center mt-2">
+                                    <input type="number" value="${set.weight}" data-ex-index="${exIndex}" data-set-index="${setIndex}" data-field="weight" oninput="window.App.updateModalSetData(this.dataset.exIndex, this.dataset.setIndex, this.dataset.field, this.value)" class="w-1/3 p-2 text-sm border border-gray-300 rounded-lg" placeholder="Peso Sugerido (kg)">
+                                    <input type="number" value="${set.reps}" data-ex-index="${exIndex}" data-set-index="${setIndex}" data-field="reps" oninput="window.App.updateModalSetData(this.dataset.exIndex, this.dataset.setIndex, this.dataset.field, this.value)" class="w-1/3 p-2 text-sm border border-gray-300 rounded-lg" placeholder="Reps Sugeridas">
+                                    <button onclick="window.App.removeModalSet(${exIndex}, ${setIndex})" class="text-red-400 hover:text-red-600 p-1 transition">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" /></svg>
+                                    </button>
+                                </div>
+                            `).join('')}
+                            <button onclick="window.App.addModalSet(${exIndex})" class="mt-3 text-xs font-semibold text-indigo-500 hover:text-indigo-700 border border-indigo-400 rounded-full px-3 py-1 transition">
+                                + Set
+                            </button>
+                        </div>
+                    `).join('');
+                };
+
+                // Funciones de actualización dentro del modal (se unen al scope de App temporalmente)
+                window.App.updateModalTemplateName = (name) => {
+                    editingTemplate.name = name;
+                    // Actualizar título del modal en tiempo real
+                    document.getElementById('modal-title').innerHTML = name.trim() ? 'Editar Plantilla: ' + name : 'Crear Plantilla';
+                };
+
+                window.App.updateModalTemplateData = (field, value, exIndex) => {
+                    editingTemplate.exercises[exIndex][field] = value;
+                };
+
+                window.App.addModalExercise = () => {
+                    editingTemplate.exercises.push({
+                        name: 'Nuevo Ejercicio',
+                        sets: [{ weight: 0, reps: 0 }]
+                    });
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                };
+
+                window.App.removeModalExercise = (exIndex) => {
+                    editingTemplate.exercises.splice(exIndex, 1);
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                };
+                
+                window.App.addModalSet = (exIndex) => {
+                    editingTemplate.exercises[exIndex].sets.push({ weight: 0, reps: 0 });
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                };
+
+                window.App.removeModalSet = (exIndex, setIndex) => {
+                    editingTemplate.exercises[exIndex].sets.splice(setIndex, 1);
+                    if (editingTemplate.exercises[exIndex].sets.length === 0) {
+                        editingTemplate.exercises[exIndex].sets.push({ weight: 0, reps: 0 });
+                    }
+                    window.App.showModal('Editor de Plantilla', editorContent(editingTemplate), true); // Re-renderizar
+                };
+
+                window.App.updateModalSetData = (exIndex, setIndex, field, value) => {
+                    const numValue = value === '' ? 0 : parseFloat(value);
+                    editingTemplate.exercises[exIndex].sets[setIndex][field] = numValue;
+                };
+
+                window.App.saveModalTemplate = async () => {
+                    if (!editingTemplate.name.trim()) {
+                        window.App.showMessage("El nombre de la plantilla es obligatorio.", 'error');
+                        return;
+                    }
+                    
+                    // 1. Limpiar sets vacíos si existen y asegurarse de que cada ejercicio tenga al menos un set
+                    editingTemplate.exercises.forEach(ex => {
+                        // Asegurar que haya al menos un set, incluso si está vacío (para mantener la estructura sugerida)
+                        if (ex.sets.length === 0) {
+                            ex.sets.push({ weight: 0, reps: 0 });
+                        }
+                    });
+
+                    // 2. Filtrar ejercicios que no tienen nombre
+                    // Usamos map para asegurar que, si hay ejercicios con sets vacíos, estos se mantengan para la plantilla
+                    editingTemplate.exercises = editingTemplate.exercises.filter(ex => ex.name.trim() !== '');
+
+                    // 3. Validación de contenido (CORRECCIÓN CLAVE)
+                    if (editingTemplate.exercises.length === 0) {
+                        window.App.showMessage("La plantilla debe tener al menos un ejercicio con nombre.", 'error');
+                        return;
+                    }
+
+                    const result = await window.App.saveTemplate(editingTemplate);
+                    if (result.success) {
+                        window.App.closeModal();
+                    }
+                };
+
+                const editorContent = (template) => `
+                    <div class="space-y-4">
+                        <input type="text" value="${template.name}" oninput="window.App.updateModalTemplateName(this.value)" class="text-2xl font-bold p-3 w-full border border-indigo-300 rounded-xl focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" placeholder="Nombre de la Plantilla (Ej. Día de Empuje)">
+                        <div id="modal-exercises-list" class="max-h-96 overflow-y-auto pr-2">
+                            ${renderTemplateExercises()}
+                        </div>
+                        <button onclick="window.App.addModalExercise()" class="w-full py-2 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 transition font-semibold shadow-md flex items-center justify-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" /></svg>
+                            Añadir Ejercicio
+                        </button>
+                        <div class="flex justify-end space-x-3 pt-4 border-t mt-4">
+                            <button onclick="window.App.closeModal()" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-lg hover:bg-gray-400 transition shadow-sm">Cancelar</button>
+                            <button onclick="window.App.saveModalTemplate()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-md">Guardar Plantilla</button>
+                        </div>
+                    </div>
+                `;
+
+                window.App.showModal(modalTitle, editorContent(templateData), true);
+            },
+
+
+            // Modal general para mensajes o interacciones
+            showModal: (title, content, isEditor = false) => {
+                const modal = document.getElementById('app-modal');
+                const modalTitle = document.getElementById('modal-title');
+                const modalContent = document.getElementById('modal-content');
+
+                modalTitle.innerHTML = title;
+                modalContent.innerHTML = content;
+
+                modal.classList.remove('opacity-0', 'pointer-events-none');
+                
+                // Ajustar el tamaño para el editor si es necesario
+                const modalPanel = modal.querySelector('.modal-panel');
+                if (isEditor) {
+                     // Tailwind classes for a larger/wider modal for the editor
+                     modalPanel.classList.remove('max-w-md');
+                     modalPanel.classList.add('max-w-4xl', 'w-11/12'); 
+                } else {
+                     modalPanel.classList.add('max-w-md');
+                     modalPanel.classList.remove('max-w-4xl', 'w-11/12'); 
+                }
+            },
+
+            closeModal: () => {
+                const modal = document.getElementById('app-modal');
+                modal.classList.add('opacity-0', 'pointer-events-none');
+            },
+
+
+            // --- Control de Vistas y UI ---
+            setView(viewName) {
+                this.currentView = viewName;
+                this.updateUI();
+                if (viewName === 'log') {
+                    // Si vamos a log, aseguramos que el log actual sea para la fecha seleccionada
+                    // y con un nuevo ID (a menos que estemos editando un log existente)
+                    if (!this.currentLog.id) {
+                        this.changeDate(this.currentWorkoutDate);
+                    } else {
+                        this.renderLogView();
+                    }
+                }
+            },
+
+            updateUI() {
+                const loadingMsg = document.getElementById('loading-message');
+                
+                if (this.isAuthReady) {
+                    loadingMsg.classList.add('hidden');
+                } else {
+                    loadingMsg.classList.remove('hidden');
+                    return;
+                }
+
+                // Actualizar pestañas (usando la clase 'nav-button' y 'active')
+                document.querySelectorAll('.nav-button').forEach(button => {
+                    // Quitamos las clases de color base, ya están en el CSS Style block
+                    button.classList.remove('active', 'bg-indigo-700', 'bg-indigo-600');
+                    if (button.id === `tab-${this.currentView}`) {
+                        button.classList.add('active'); // Aplica el estilo activo de CSS
+                    }
+                });
+
+                // Renderizar la vista activa
+                document.querySelectorAll('.view-content').forEach(view => view.classList.add('hidden'));
+                document.getElementById(`view-${this.currentView}`).classList.remove('hidden');
+
+                switch (this.currentView) {
+                    case 'log':
+                        this.renderLogView();
+                        break;
+                    case 'history':
+                        this.renderHistoryView();
+                        break;
+                    case 'planning':
+                        this.renderPlanningView();
+                        break;
+                }
+            },
+
+            // 1. VISTA DE REGISTRO DIARIO
+            renderLogView() {
+                const logView = document.getElementById('view-log');
+                const logData = this.currentLog; 
+
+                // Asegurar que la fecha mostrada en el input coincida con el currentLog
+                const dateInput = document.getElementById('log-date');
+                if (dateInput) dateInput.value = logData.date;
+                
+                // Asegurar que el nombre mostrado en el input coincida con el currentLog
+                const nameInput = document.getElementById('log-name');
+                if (nameInput) nameInput.value = logData.name;
+
+                const renderSets = (exercise, exIndex) => {
+                    return exercise.sets.map((set, setIndex) => `
+                        <div class="flex space-x-2 items-center mb-3 bg-white p-3 rounded-xl shadow-inner border border-gray-100">
+                            <span class="text-base font-bold w-6 text-center text-indigo-600">${setIndex + 1}.</span>
+                            
+                            <div class="flex-1">
+                                <label class="text-xs text-gray-500 absolute -mt-4 ml-2">Peso (kg)</label>
+                                <input type="number" 
+                                    value="${set.weight > 0 ? set.weight : ''}" 
+                                    oninput="window.App.updateSetData(${exIndex}, ${setIndex}, 'weight', this.value)" 
+                                    class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 font-semibold text-gray-800" 
+                                    placeholder="0"
+                                    min="0" step="0.5">
+                            </div>
+                            
+                            <div class="flex-1">
+                                <label class="text-xs text-gray-500 absolute -mt-4 ml-2">Reps</label>
+                                <input type="number" 
+                                    value="${set.reps > 0 ? set.reps : ''}" 
+                                    oninput="window.App.updateSetData(${exIndex}, ${setIndex}, 'reps', this.value)" 
+                                    class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 font-semibold text-gray-800" 
+                                    placeholder="0"
+                                    min="0">
+                            </div>
+                            
+                            <button onclick="window.App.removeSet(${exIndex}, ${setIndex})" class="remove-set-btn text-red-500 hover:text-red-700 p-2 rounded-full bg-red-100 hover:bg-red-200 transition">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                        </div>
+                    `).join('');
+                };
+
+                const renderExercises = () => {
+                    if (logData.exercises.length === 0) {
+                        return '<p class="text-center text-gray-500 mt-8 p-6 bg-gray-100 rounded-xl shadow-inner border border-gray-200">Añade tu primer ejercicio o carga una plantilla.</p>';
+                    }
+
+                    return logData.exercises.map((exercise, exIndex) => `
+                        <div class="bg-white border border-indigo-300 rounded-2xl shadow-xl p-5 mb-8">
+                            <div class="flex justify-between items-start mb-4 border-b border-indigo-100 pb-3">
+                                <input type="text" value="${exercise.name}" oninput="window.App.updateExerciseName(${exIndex}, this.value)" class="text-2xl font-extrabold text-gray-800 w-full focus:outline-none focus:ring-1 focus:ring-indigo-500 border-none" placeholder="Nombre del Ejercicio (ej. Press Banca)">
+                                <button onclick="window.App.removeExercise(${exIndex})" class="ml-4 text-gray-400 hover:text-red-500 transition duration-150 p-2 rounded-full hover:bg-red-50">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                                </button>
+                            </div>
+
+                            <!-- Sobrecarga Progresiva (Previous Performance) -->
+                            <div id="prev-perf-${exIndex}" class="bg-indigo-100 p-3 rounded-xl mb-4 text-sm hidden border border-indigo-300 transition duration-300">
+                                <p class="text-indigo-800 font-semibold flex items-center">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 8a1 1 0 000 2h6a1 1 0 100-2H7z" clip-rule="evenodd" /></svg>
+                                    PROGRESIÓN:
+                                </p>
+                                <p id="prev-perf-content-${exIndex}" class="text-gray-700 mt-1"></p>
+                            </div>
+                            
+                            <!-- Lista de Sets -->
+                            ${renderSets(exercise, exIndex)}
+
+                            <div class="flex space-x-4 mt-5">
+                                <button onclick="window.App.addSet(${exIndex})" class="flex-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition duration-150 shadow-lg font-semibold">
+                                    + Añadir Set
+                                </button>
+                                <button onclick="window.App.fetchPrevious(${exIndex})" class="px-3 py-2 text-sm bg-gray-100 text-indigo-700 rounded-xl hover:bg-gray-200 transition duration-150 shadow-md border border-gray-300 font-semibold">
+                                    Ver Progresión
+                                </button>
+                            </div>
+                        </div>
+                    `).join('');
+                };
+
+                logView.innerHTML = `
+                    <h2 class="text-4xl font-extrabold text-gray-900 mb-8 border-b pb-2 border-indigo-200">Registro Diario</h2>
+
+                    <!-- Información de sesión actual (ID y fecha/hora) -->
+                    <div class="text-xs text-gray-400 mb-2">
+                        ID de Sesión: ${logData.id.substring(0, 8)}...
+                        (Fecha actual: ${logData.date})
+                    </div>
+
+                    <!-- Selector de Fecha y Nombre de Sesión (Diseño de Tarjeta Elevada) -->
+                    <div class="bg-white p-5 rounded-2xl shadow-2xl mb-8 border border-indigo-200">
+                        <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-6 mb-4">
+                            <div class="flex-1">
+                                <label for="log-date" class="block text-sm font-medium text-gray-700 mb-1">Fecha de la Sesión</label>
+                                <input type="date" id="log-date" value="${this.currentWorkoutDate}" onchange="window.App.changeDate(this.value)" class="mt-1 block w-full p-3 border border-indigo-300 rounded-xl shadow-inner focus:ring-indigo-500 focus:border-indigo-500 text-lg">
+                            </div>
+                            <div class="flex-1">
+                                <label for="log-name" class="block text-sm font-medium text-gray-700 mb-1">Nombre del Entrenamiento</label>
+                                <input type="text" id="log-name" value="${logData.name}" oninput="window.App.updateWorkoutName(this.value)" class="mt-1 block w-full p-3 border border-indigo-300 rounded-xl shadow-inner focus:ring-indigo-500 focus:border-indigo-500 text-lg" placeholder="Ej. Empuje Pesado, Día A">
+                            </div>
+                        </div>
+                        <div class="flex justify-end space-x-3 pt-4 border-t border-gray-100">
+                             <button onclick="window.App.loadTemplateSelector()" class="px-4 py-2 text-base font-medium text-indigo-700 bg-indigo-100 rounded-xl hover:bg-indigo-200 transition shadow-md">Cargar Plantilla</button>
+                             
+                             <!-- Botón Guardar (Indigo) -->
+                             <button onclick="window.App.saveCurrentWorkout()" class="px-4 py-2 text-base font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition shadow-lg flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M7.707 10.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L10 12.586 7.707 10.293zM10 18a8 8 0 100-16 8 8 0 000 16z"/></svg>
+                                Guardar
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Lista de Ejercicios -->
+                    <div id="exercises-list">
+                        ${renderExercises()}
+                    </div>
+
+                    <!-- Botón para Añadir Nuevo Ejercicio (Destacado) -->
+                    <button onclick="window.App.addExercise()" class="w-full py-3 bg-indigo-600 text-white rounded-2xl shadow-2xl hover:bg-indigo-700 transition duration-150 mt-6 mb-12 font-bold text-lg flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        Añadir Nuevo Ejercicio
+                    </button>
+                `;
+            },
+
+            // 2. VISTA DE HISTORIAL
+            renderHistoryView() {
+                const historyView = document.getElementById('view-history');
+                // Ordenamos el array de workouts por fecha y luego por ID (para un ordenamiento estable)
+                const sortedWorkouts = [...this.workouts].sort((a, b) => {
+                    const dateComparison = b.date.localeCompare(a.date);
+                    if (dateComparison !== 0) return dateComparison;
+                    return a.id.localeCompare(b.id); // Orden secundario por ID
+                });
+
+                const renderWorkoutSummary = (workout) => {
+                    const totalExercises = workout.exercises.length;
+                    const totalSets = workout.exercises.reduce((sum, ex) => sum + ex.sets.length, 0);
+
+                    return `
+                        <div onclick="window.App.viewWorkoutDetails('${workout.id}')" class="bg-white p-5 rounded-xl shadow-lg border border-gray-200 hover:shadow-xl hover:border-indigo-400 transition duration-200 cursor-pointer mb-4">
+                            <h3 class="text-2xl font-bold text-indigo-700">${workout.name || 'Entrenamiento sin nombre'}</h3>
+                            <p class="text-sm text-gray-500 mb-3">${workout.date} <span class="text-xs text-gray-400 ml-2">(ID: ${workout.id.substring(0, 4)}...)</span></p>
+                            <div class="flex space-x-6 text-base text-gray-600 font-medium border-t border-gray-100 pt-3">
+                                <span class="flex items-center"><strong class="text-indigo-600 mr-1">${totalExercises}</strong> Ejercicios</span>
+                                <span class="flex items-center"><strong class="text-indigo-600 mr-1">${totalSets}</strong> Series</span>
+                            </div>
+                        </div>
+                    `;
+                };
+
+                historyView.innerHTML = `
+                    <h2 class="text-4xl font-extrabold text-gray-900 mb-8 border-b pb-2 border-indigo-200">Historial de Entrenamientos</h2>
+                    <p class="text-gray-600 mb-6">Aquí puedes ver un resumen de todos tus entrenamientos registrados. Haz clic en una sesión para ver los detalles.</p>
+                    <div id="history-list">
+                        ${sortedWorkouts.length > 0
+                            ? sortedWorkouts.map(renderWorkoutSummary).join('')
+                            : '<p class="text-center text-gray-500 mt-8 p-6 bg-gray-100 rounded-xl shadow-inner border border-gray-200">Aún no has registrado ningún entrenamiento.</p>'
+                        }
+                    </div>
+                `;
+            },
+
+            // 3. VISTA DE PLANIFICACIÓN
+            renderPlanningView() {
+                const planningView = document.getElementById('view-planning');
+
+                const renderTemplate = (template) => {
+                    const totalExercises = template.exercises.length;
+                    return `
+                        <div class="bg-white p-5 rounded-xl shadow-lg border border-indigo-200 mb-4 flex justify-between items-center">
+                            <div>
+                                <h3 class="text-2xl font-bold text-indigo-700">${template.name}</h3>
+                                <p class="text-sm text-gray-600 mt-1"><strong class="text-indigo-600">${totalExercises}</strong> Ejercicios</p>
+                            </div>
+                            <div class="space-x-2 flex items-center">
+                                <button onclick="window.App.editTemplate('${template.id}')" title="Editar" class="text-indigo-600 hover:text-indigo-800 p-2 rounded-full bg-indigo-100 hover:bg-indigo-200 transition">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zm-5.657 5.657l-4.95 4.95A1 1 0 003 15.06V17h1.94l4.95-4.95-2.828-2.828z" /></svg>
+                                </button>
+                                <button onclick="window.App.confirmDeleteTemplate('${template.id}', '${template.name}')" title="Eliminar" class="text-red-500 hover:text-red-700 p-2 rounded-full bg-red-100 hover:bg-red-200 transition">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                };
+
+                planningView.innerHTML = `
+                    <h2 class="text-4xl font-extrabold text-gray-900 mb-8 border-b pb-2 border-indigo-200">Planificación y Plantillas</h2>
+                    <p class="text-gray-600 mb-6">Crea plantillas para organizar tus rutinas y cargarlas rápidamente en tu registro diario.</p>
+                    
+                    <!-- Botón Crear Nueva Plantilla (Indigo) -->
+                    <button onclick="window.App.createNewTemplate()" class="w-full py-3 bg-indigo-600 text-white rounded-2xl shadow-xl hover:bg-indigo-700 transition duration-150 mt-4 mb-8 font-bold text-lg flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+                        Crear Nueva Plantilla
+                    </button>
+
+                    <h3 class="text-2xl font-semibold text-gray-700 mb-4 border-b pb-1">Mis Plantillas</h3>
+                    <div id="templates-list">
+                        ${this.templates.length > 0
+                            ? this.templates.map(renderTemplate).join('')
+                            : '<p class="text-center text-gray-500 mt-8 p-6 bg-gray-100 rounded-xl shadow-inner border border-gray-200">Aún no tienes plantillas. ¡Crea una para empezar a planificar!</p>'
+                        }
+                    </div>
+                `;
+            },
+        });
+
+        // --- INICIALIZACIÓN DE FIREBASE ---
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            window.App.initializeAuth();
+        } catch (e) {
+            console.error("Error al inicializar Firebase. Asegúrate de que __firebase_config esté definido.", e);
+            document.getElementById('loading-message').textContent = 'Error: No se pudo inicializar la base de datos.';
+        }
+    </script>
+</head>
+<body class="p-4 sm:p-8">
+
+    <!-- Contenedor de Mensajes de Sistema -->
+    <div id="system-message-container" class="fixed top-4 right-4 z-50 max-w-xs sm:max-w-sm">
+        <!-- Los mensajes se insertan aquí por JS -->
+    </div>
+
+    <!-- Modal de la Aplicación (Oculto por defecto) -->
+    <div id="app-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-40 transition-opacity duration-300 opacity-0 pointer-events-none">
+        <div class="bg-white rounded-2xl shadow-2xl p-6 transform transition-all modal-panel max-w-md w-11/12">
+            <h2 id="modal-title" class="text-2xl font-bold text-indigo-700 mb-4 border-b pb-2">Título del Modal</h2>
+            <div id="modal-content" class="text-gray-700 max-h-[80vh] overflow-y-auto pr-3">
+                <!-- Contenido dinámico del modal -->
+            </div>
+            <button onclick="window.App.closeModal()" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+        </div>
+    </div>
+
+    <div class="max-w-4xl mx-auto container-card bg-white p-6 sm:p-10 rounded-3xl shadow-2xl">
+        
+        <!-- Encabezado y Navegación -->
+        <header class="mb-10">
+            <h1 class="text-4xl font-extrabold text-gray-800 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 mr-3 text-indigo-600" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" /></svg>
+                <span class="text-indigo-700">Entrenamiento</span><span class="text-gray-900">Personal</span>
+            </h1>
+            
+            <!-- Barra de Navegación con Fondo Indigo-100 (Claro) -->
+            <nav class="mt-8 flex space-x-2 bg-indigo-100 p-2 rounded-2xl shadow-lg">
+                <button id="tab-log" onclick="window.App.setView('log')" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl active">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM6 9a2 2 0 100 4h8a2 2 0 100-4H6z" /></svg>
+                    <span class="hidden sm:inline">Registro Diario</span>
+                </button>
+                <button id="tab-history" onclick="window.App.setView('history')" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline mr-1" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" /></svg>
+                    <span class="hidden sm:inline">Historial</span>
+                </button>
+                <button id="tab-planning" onclick="window.App.setView('planning')" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" /></svg>
+                    <span class="hidden sm:inline">Planificación</span>
+                </button>
+            </nav>
+        </header>
+
+        <!-- Mensaje de Carga/Usuario -->
+        <div id="loading-message" class="text-center py-12 text-gray-500 text-xl font-medium">
+            Conectando con la base de datos... Por favor, espera.
+        </div>
+
+        <!-- Contenido de las Vistas -->
+        <main class="mt-8">
+            <!-- Vista de Registro Diario -->
+            <div id="view-log" class="view-content">
+                <!-- Contenido generado por renderLogView() -->
+            </div>
+
+            <!-- Vista de Historial -->
+            <div id="view-history" class="view-content hidden">
+                <!-- Contenido generado por renderHistoryView() -->
+            </div>
+
+            <!-- Vista de Planificación (Plantillas) -->
+            <div id="view-planning" class="view-content hidden">
+                <!-- Contenido generado por renderPlanningView() -->
+            </div>
+
+        </main>
+    </div>
+</body>
+</html>
