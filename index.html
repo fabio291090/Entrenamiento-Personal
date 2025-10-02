@@ -740,13 +740,15 @@
             setView(viewName) {
                 this.currentView = viewName;
                 this.updateUI();
+                
+                // Lógica de carga del log inicial al cambiar a la vista de registro
                 if (viewName === 'log') {
-                    // Si vamos a log, aseguramos que el log actual sea para la fecha seleccionada
-                    // y con un nuevo ID (a menos que estemos editando un log existente)
-                    if (!this.currentLog.id) {
+                    // Si no hay ID o si la fecha del log actual no coincide con la fecha seleccionada
+                    if (!this.currentLog.id || this.currentLog.date !== this.currentWorkoutDate) {
                         this.changeDate(this.currentWorkoutDate);
                     } else {
-                        this.renderLogView();
+                        // Si ya estamos en la fecha correcta, solo renderizamos para refrescar
+                        this.renderLogView(); 
                     }
                 }
             },
@@ -754,14 +756,17 @@
             updateUI() {
                 const loadingMsg = document.getElementById('loading-message');
                 
+                // 1. Manejar el mensaje de carga de autenticación
                 if (this.isAuthReady) {
                     loadingMsg.classList.add('hidden');
                 } else {
                     loadingMsg.classList.remove('hidden');
-                    return;
+                    // IMPORTANTE: Se elimina el 'return' aquí. 
+                    // Esto permite que el cambio de vista (clase 'hidden') suceda 
+                    // incluso si Firebase no ha terminado de autenticar.
                 }
 
-                // Actualizar pestañas (usando la clase 'nav-button' y 'active')
+                // 2. Actualizar pestañas (usando la clase 'nav-button' y 'active')
                 document.querySelectorAll('.nav-button').forEach(button => {
                     // Quitamos las clases de color base, ya están en el CSS Style block
                     button.classList.remove('active');
@@ -770,9 +775,23 @@
                     }
                 });
 
-                // Renderizar la vista activa
+                // 3. Renderizar la vista activa (El cambio de contenedor SIEMPRE debe ocurrir)
                 document.querySelectorAll('.view-content').forEach(view => view.classList.add('hidden'));
-                document.getElementById(`view-${this.currentView}`).classList.remove('hidden');
+                const currentViewElement = document.getElementById(`view-${this.currentView}`);
+                if (currentViewElement) {
+                    currentViewElement.classList.remove('hidden');
+                }
+
+                // Si no está listo, evitamos llamar a los renderizadores que intentan cargar datos
+                if (!this.isAuthReady && (this.currentView === 'history' || this.currentView === 'planning')) {
+                     // Si no está listo y la vista requiere datos, podemos mostrar un mensaje dentro del contenedor
+                     if (this.currentView === 'history') {
+                         document.getElementById('view-history').innerHTML = this.renderAuthRequiredMessage("Historial");
+                     } else if (this.currentView === 'planning') {
+                         document.getElementById('view-planning').innerHTML = this.renderAuthRequiredMessage("Planificación");
+                     }
+                     return; 
+                }
 
                 switch (this.currentView) {
                     case 'log':
@@ -785,6 +804,18 @@
                         this.renderPlanningView();
                         break;
                 }
+            },
+            
+            // Mensaje de autenticación requerido para vistas de datos
+            renderAuthRequiredMessage(viewName) {
+                return `
+                    <h2 class="text-4xl font-extrabold text-gray-900 mb-8 border-b pb-2 border-indigo-200">${viewName}</h2>
+                    <div class="text-center py-12 px-6 bg-yellow-100 border border-yellow-300 rounded-xl mt-8">
+                        <p class="text-xl font-semibold text-yellow-800 mb-3">Cargando datos...</p>
+                        <p class="text-sm text-yellow-700">El proceso de autenticación de la base de datos es automático. Por favor, espere un momento para que se cargue su historial o plantillas.</p>
+                        <p class="text-xs text-yellow-600 mt-2">Si el problema persiste, intente recargar la página.</p>
+                    </div>
+                `;
             },
 
             // 1. VISTA DE REGISTRO DIARIO
@@ -1009,6 +1040,7 @@
                 const planningBtn = document.getElementById('tab-planning');
 
                 // Añadimos los listeners de clic, asegurando que App.setView esté disponible
+                // ESTOS LISTENERS FUNCIONAN CORRECTAMENTE
                 if (logBtn) logBtn.addEventListener('click', () => window.App.setView('log'));
                 if (historyBtn) historyBtn.addEventListener('click', () => window.App.setView('history'));
                 if (planningBtn) planningBtn.addEventListener('click', () => window.App.setView('planning'));
@@ -1029,7 +1061,6 @@
         }
 
         // Ejecutar los listeners de navegación cuando el DOM esté listo
-        // (Esto es más robusto que usar onclick directamente en HTML cuando se usa type="module" en el head)
         document.addEventListener('DOMContentLoaded', setupNavListeners);
     </script>
 </head>
@@ -1064,7 +1095,7 @@
             
             <!-- Barra de Navegación con Fondo Indigo-100 (Claro) -->
             <nav class="mt-8 flex space-x-2 bg-indigo-100 p-2 rounded-2xl shadow-lg">
-                <!-- SE ELIMINA EL ONCLICK. Ahora se maneja con un event listener en JS. -->
+                <!-- ID para los Listeners: tab-log, tab-history, tab-planning -->
                 <button id="tab-log" class="nav-button flex-1 py-3 px-4 text-base font-bold rounded-xl active">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline mr-1" viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM6 9a2 2 0 100 4h8a2 2 0 100-4H6z" /></svg>
                     <span class="hidden sm:inline">Registro Diario</span>
@@ -1081,7 +1112,7 @@
         </header>
 
         <!-- Mensaje de Carga/Usuario -->
-        <div id="loading-message" class="text-center py-12 text-gray-500 text-xl font-medium">
+        <div id="loading-message" class="text-center py-12 text-gray-500 text-xl font-medium absolute inset-0 bg-white bg-opacity-90 z-20 hidden">
             Conectando con la base de datos... Por favor, espera.
         </div>
 
@@ -1106,4 +1137,3 @@
     </div>
 </body>
 </html>
-
